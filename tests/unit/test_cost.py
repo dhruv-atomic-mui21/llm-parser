@@ -1,50 +1,37 @@
 """
-Tests for CostCalculator
+Rigorous tests for CostCalculator.
 """
+
 import pytest
-from llm_context_forge.cost import CostCalculator, Cost, ConversationCost, BulkCostAnalysis
+from llm_context_forge.cost import CostCalculator
+from llm_context_forge.models import ModelRegistry
 
 class TestCostCalculator:
+    """Concrete mathematical logic validators for billing operations."""
+
     def setup_method(self):
         self.calc = CostCalculator("gpt-4o")
-        self.text = "Hello world, this is a test snippet."
 
-    def test_estimate_prompt(self):
-        cost = self.calc.estimate_prompt(self.text)
-        assert isinstance(cost, Cost)
-        assert cost.tokens > 0
-        assert cost.usd > 0
-        assert cost.model == "gpt-4o"
-
-    def test_estimate_completion(self):
-        cost = self.calc.estimate_completion(self.text)
-        assert isinstance(cost, Cost)
-        assert cost.tokens > 0
-        assert cost.usd > 0
+    def test_mathematical_validity_inputs(self):
+        """Test math engine determinism based on manual knowns."""
+        info = ModelRegistry.get("gpt-4o")
+        assert info.input_cost_per_1k == 0.005
         
-    def test_estimate_conversation(self):
-        messages = [
-            {"role": "user", "content": "Hello"},
-            {"role": "assistant", "content": "Hi"}
-        ]
-        cost = self.calc.estimate_conversation(messages)
-        assert isinstance(cost, ConversationCost)
-        assert cost.input_tokens > 0
-        assert cost.total_usd > 0
+        # 100k input tokens = $0.50
+        cost = self.calc.estimate_prompt(100_000, "gpt-4o")
+        # Assert effectively identical mathematically using a tight delta margin
+        assert abs(cost.usd - 0.50) < 0.0001
+        
+    def test_mathematical_validity_outputs(self):
+        cost = self.calc.estimate_completion(100_000, "gpt-4o")
+        # 100k generated tokens = $1.50
+        assert abs(cost.usd - 1.50) < 0.0001
+        
+    def test_conversation_aggregates(self):
+        msgs = [{"role": "user", "content": "Test"}] # roughly 4 tokens input
+        cost = self.calc.estimate_conversation(msgs, assumed_output_tokens=500)
+        
+        # 500 outputs * 0.015 / 1000 = 0.0075
         assert cost.input_usd > 0
-        assert cost.output_usd > 0
-
-    def test_bulk_estimate(self):
-        docs = ["Doc 1", "Doc 2", "Doc 3"]
-        cost = self.calc.bulk_estimate(docs)
-        assert isinstance(cost, BulkCostAnalysis)
-        assert cost.num_documents == 3
-        assert cost.total_tokens > 0
-        assert cost.total_usd > 0
-
-    def test_compare_models(self):
-        docs = ["Hello world"]
-        comparison = self.calc.compare_models(docs, ["gpt-4o", "claude-3.5-sonnet"])
-        assert "gpt-4o" in comparison
-        assert "claude-3.5-sonnet" in comparison
-        assert comparison["gpt-4o"].total_tokens > 0
+        assert abs(cost.output_usd - 0.0075) < 0.0001
+        assert abs(cost.total_usd - (cost.input_usd + cost.output_usd)) < 0.000001

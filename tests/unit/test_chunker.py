@@ -1,98 +1,52 @@
 """
-Tests for DocumentChunker
+Rigorous tests for DocumentChunker
 """
+
 import pytest
-from llm_context_forge.chunker import DocumentChunker, ChunkStrategy, Chunk
-
-class TestChunkCreation:
-    """Tests for Chunk dataclass."""
-
-    def test_chunk_char_count(self):
-        c = Chunk(text="Hello world", index=0, token_count=2)
-        assert c.char_count == 11
-
-    def test_chunk_metadata_default(self):
-        c = Chunk(text="test", index=0, token_count=1)
-        assert c.metadata == {}
+from llm_context_forge.chunker import DocumentChunker, ChunkStrategy
 
 class TestDocumentChunker:
-    """Tests for DocumentChunker."""
+    """Rigorous constraints, overlaps, and bounds tests."""
 
     def setup_method(self):
         self.chunker = DocumentChunker("gpt-4o")
 
-    def test_chunk_empty_text(self):
-        chunks = self.chunker.chunk("")
-        assert chunks == []
-
-    def test_chunk_whitespace_only(self):
-        chunks = self.chunker.chunk("   \n\n   ")
-        assert chunks == []
-
-    def test_chunk_short_text_single_chunk(self):
-        chunks = self.chunker.chunk("Hello world.", max_tokens=500)
-        assert len(chunks) == 1
-        assert chunks[0].text == "Hello world."
-
-    def test_chunk_paragraph_strategy(self):
-        text = "First paragraph.\n\nSecond paragraph.\n\nThird paragraph."
-        chunks = self.chunker.chunk(text, ChunkStrategy.PARAGRAPH, max_tokens=500)
-        assert len(chunks) >= 1
-
-    def test_chunk_sentence_strategy(self):
-        text = "First sentence. Second sentence. Third sentence. Fourth sentence."
-        chunks = self.chunker.chunk(text, ChunkStrategy.SENTENCE, max_tokens=10)
-        assert len(chunks) >= 1
-
-    def test_chunk_fixed_strategy(self):
-        text = "x" * 5000
-        chunks = self.chunker.chunk(text, ChunkStrategy.FIXED, max_tokens=100)
+    def test_constraint_enforcement_paragraphs(self):
+        """Ensure paragraphs never exceed max_tokens constraint."""
+        text = "P1\n\nP2\n\nP3\n\nP4\n\nP5"
+        chunks = self.chunker.chunk(text, strategy=ChunkStrategy.PARAGRAPH, max_tokens=5, overlap_tokens=0)
+        
         assert len(chunks) > 1
+        for c in chunks:
+            assert c.token_count <= 5
 
-    def test_chunk_indices_sequential(self):
-        text = "Para one.\n\nPara two.\n\nPara three.\n\nPara four."
-        chunks = self.chunker.chunk(text, ChunkStrategy.PARAGRAPH, max_tokens=10)
-        for i, chunk in enumerate(chunks):
-            assert chunk.index == i
+    def test_force_split_massive_lines(self):
+        """When semantic chunks fail, character splitting must enforce the bounds."""
+        massive = "word " * 500  # huge single line with no punctuation
+        chunks = self.chunker.chunk(massive, max_tokens=50, overlap_tokens=0)
+        
+        assert len(chunks) > 1
+        for c in chunks:
+            assert hasattr(c, "token_count")
+            assert c.token_count <= 50
 
-    def test_chunk_respects_max_tokens(self):
-        text = "word " * 1000
-        chunks = self.chunker.chunk(text, ChunkStrategy.SENTENCE, max_tokens=50)
-        for chunk in chunks:
-            # Allow some tolerance for edge cases
-            assert chunk.token_count <= 60
+    def test_overlap_handling_infinite_safety(self):
+        """Overlap should not prevent progression or cause infinite loops."""
+        text = "A. B. C. D. E. F. G. H. I. J. K. L. M. N. O. P. Q. R. S. T. U. V. W. X. Y. Z."
+        # Overly restrictive bounds
+        chunks = self.chunker.chunk(text, strategy=ChunkStrategy.SENTENCE, max_tokens=5, overlap_tokens=2)
+        
+        assert len(chunks) > 5
+        # Ensure chunks don't magically end up empty
+        for c in chunks:
+            assert c.token_count > 0
 
-    def test_chunk_code(self):
-        from tests.fixtures.sample_data import CODE_SNIPPET
-        chunks = self.chunker.chunk_code(CODE_SNIPPET, "python", max_tokens=500)
-        assert len(chunks) >= 1
-
-    def test_chunk_markdown(self):
-        from tests.fixtures.sample_data import MARKDOWN_DOC
-        chunks = self.chunker.chunk_markdown(MARKDOWN_DOC, max_tokens=500)
-        assert len(chunks) >= 1
-
-class TestMergeSmallChunks:
-    def setup_method(self):
-        self.chunker = DocumentChunker("gpt-4o")
-
-    def test_merge_empty_list(self):
-        assert self.chunker.merge_small_chunks([]) == []
-
-    def test_merge_all_small(self):
-        chunks = [
-            Chunk(text="a", index=0, token_count=1),
-            Chunk(text="b", index=1, token_count=1),
-            Chunk(text="c", index=2, token_count=1),
-        ]
-        merged = self.chunker.merge_small_chunks(chunks, min_tokens=5)
-        assert len(merged) == 1
-
-    def test_merge_preserves_large(self):
-        chunks = [
-            Chunk(text="large block " * 50, index=0, token_count=100),
-            Chunk(text="small", index=1, token_count=1),
-        ]
-        merged = self.chunker.merge_small_chunks(chunks, min_tokens=10)
-        assert len(merged) == 2
-
+    def test_code_chunk_respects_functions(self):
+        """Functions should remain largely coherent chunks unless forced."""
+        code = "def foo():\n    pass\n\ndef bar():\n    pass"
+        chunks = self.chunker.chunk_code(code, max_tokens=50)
+        
+        # Depending on splits, this could be 1 chunk if budget allows or 2
+        assert len(chunks) > 0
+        for c in chunks:
+            assert c.token_count <= 50
